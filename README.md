@@ -2,41 +2,11 @@
 
 Projeto do desafio de Ingestão e Busca Semântica com LangChain e pgVector. O sistema lê um PDF, divide o conteúdo em chunks de 1000 caracteres com overlap de 150, gera embeddings e persiste os vetores em PostgreSQL com pgVector. Depois, permite perguntas pelo terminal e gera respostas usando somente os chunks recuperados.
 
-## Arquitetura
-
-```text
-                 ┌─────────────────┐
-                 │   document.pdf  │
-                 └────────┬────────┘
-                          │ PyPDFLoader
-                          ▼
-                 ┌─────────────────┐
-                 │ Text Splitter   │
-                 │ 1000 / overlap  │
-                 │      150        │
-                 └────────┬────────┘
-                          │ embeddings
-                          ▼
-                 ┌─────────────────┐
-                 │ PostgreSQL      │
-                 │ + pgVector      │
-                 └────────┬────────┘
-                          │ top 10
-                          ▼
-                 ┌─────────────────┐
- PERGUNTA ──────►│ LangChain       │
-                 │ + LLM           │
-                 └────────┬────────┘
-                          ▼
-                       RESPOSTA
-```
-
 ## Stack
 
-- Python
+- Python 3.11+
 - LangChain
-- PostgreSQL 17
-- pgVector
+- PostgreSQL 17 + pgVector
 - Docker Compose
 - OpenAI embeddings: `text-embedding-3-small`
 - OpenAI LLM: configurável por `OPENAI_CHAT_MODEL`
@@ -47,108 +17,60 @@ Projeto do desafio de Ingestão e Busca Semântica com LangChain e pgVector. O s
 - Docker + Docker Compose v2
 - Uma API Key da OpenAI
 
-## 1. Criar o ambiente virtual
+## Configuração
 
-Linux/macOS:
-
-```bash
-python3 -m venv venv
-source venv/bin/activate
-```
-
-Windows PowerShell:
+Crie o ambiente virtual e instale as dependências:
 
 ```powershell
 py -m venv venv
 .\venv\Scripts\Activate.ps1
-```
-
-Instale as dependências:
-
-```bash
 pip install -r requirements.txt
 ```
 
-## 2. Configurar as variáveis
-
-```bash
-cp .env.example .env
-```
-
-No Windows, crie uma cópia de `.env.example` chamada `.env`.
-
-Preencha pelo menos:
+Copie `.env.example` para `.env` e preencha:
 
 ```env
 OPENAI_API_KEY=sua-chave-aqui
 ```
 
-O projeto usa por padrão:
+O exemplo usa `gpt-5.6-sol` como modelo de chat. O modelo pode ser alterado pela variável `OPENAI_CHAT_MODEL` conforme os modelos disponíveis para a sua conta/API.
 
-```env
-OPENAI_EMBEDDING_MODEL=text-embedding-3-small
-OPENAI_CHAT_MODEL=gpt-5.6-luna
-DATABASE_URL=postgresql+psycopg://postgres:postgres@localhost:5432/rag
-PG_VECTOR_COLLECTION_NAME=pdf_documents
-PDF_PATH=document.pdf
-RESET_COLLECTION=true
-```
+Substitua o `document.pdf` de exemplo pelo PDF real do desafio.
 
-Os modelos podem ser alterados sem modificar o código. Se trocar o modelo de embeddings depois da primeira ingestão, apague a collection/volume e faça a ingestão novamente, pois a dimensão dos vetores pode mudar.
+## Execução
 
-## 3. Colocar o PDF
-
-Substitua o `document.pdf` da raiz pelo PDF que será usado no desafio. O caminho pode ser alterado com `PDF_PATH`.
-
-## 4. Subir PostgreSQL + pgVector
+Suba o PostgreSQL:
 
 ```bash
 docker compose up -d
 ```
 
-Confira os containers:
+O arquivo `init.sql` cria automaticamente a extensão `vector` na inicialização do PostgreSQL.
 
-```bash
-docker compose ps
-```
-
-O serviço `bootstrap_vector_ext` cria a extensão `vector` automaticamente depois que o PostgreSQL estiver saudável.
-
-## 5. Fazer a ingestão
+Faça a ingestão:
 
 ```bash
 python src/ingest.py
 ```
 
-A ingestão executa:
-
-1. `PyPDFLoader` para ler o PDF;
-2. `RecursiveCharacterTextSplitter` com `chunk_size=1000` e `chunk_overlap=150`;
-3. embeddings OpenAI para cada chunk;
-4. persistência no PostgreSQL usando `PGVector`.
-
-Por padrão `RESET_COLLECTION=true`, então uma nova ingestão recria a collection antes de inserir os chunks e evita duplicação durante testes.
-
-## 6. Rodar o chat
+Execute o chat:
 
 ```bash
 python src/chat.py
 ```
 
-Exemplo:
+## Ingestão
 
-```text
-Busca semântica no PDF
-Digite 'sair' para encerrar.
+A ingestão executa:
 
-PERGUNTA: Qual o faturamento da Empresa SuperTechIABrazil?
-RESPOSTA: O faturamento foi de 10 milhões de reais.
+1. `PyPDFLoader` para ler o PDF;
+2. `RecursiveCharacterTextSplitter` com `chunk_size=1000` e `chunk_overlap=150`;
+3. embeddings para cada chunk;
+4. persistência no PostgreSQL usando `PGVector`.
 
-PERGUNTA: Quantos clientes temos em 2024?
-RESPOSTA: Não tenho informações necessárias para responder sua pergunta.
-```
+Por padrão, `RESET_COLLECTION=true`, então uma nova ingestão recria a collection antes de inserir os chunks.
 
-## Como a busca funciona
+## Busca e chat
 
 Para cada pergunta, `src/search.py` chama:
 
@@ -156,15 +78,15 @@ Para cada pergunta, `src/search.py` chama:
 similarity_search_with_score(query, k=10)
 ```
 
-Os 10 chunks recuperados são concatenados e enviados à LLM junto com o prompt obrigatório do desafio. A LLM recebe uma instrução explícita para não usar conhecimento externo e retornar a frase de fallback quando a informação não estiver explicitamente no contexto.
+Os 10 chunks recuperados são enviados à LLM junto com o prompt do desafio. O prompt restringe a resposta ao contexto recuperado e exige exatamente:
 
-## Observação sobre o score
+```text
+Não tenho informações necessárias para responder sua pergunta.
+```
 
-O valor retornado por `similarity_search_with_score` é mantido apenas como metadado de diagnóstico. Não há um threshold arbitrário no código porque o enunciado determina que a consulta deve recuperar `k=10`; a decisão de responder ou usar a frase de fallback fica restrita ao contexto fornecido ao modelo.
+quando a informação solicitada não estiver explicitamente disponível no contexto.
 
-## Reiniciar completamente o banco
-
-Se trocar o modelo de embeddings e ocorrer incompatibilidade de dimensão, remova o volume do PostgreSQL e recrie a infraestrutura:
+## Reiniciar o banco
 
 ```bash
 docker compose down -v
@@ -174,12 +96,13 @@ python src/ingest.py
 
 ## Segurança
 
-Nunca faça commit do `.env`. A chave da OpenAI deve ficar somente no ambiente local.
+Nunca faça commit do arquivo `.env`. A chave da OpenAI deve permanecer somente no ambiente local.
 
 ## Estrutura
 
 ```text
 ├── docker-compose.yml
+├── init.sql
 ├── requirements.txt
 ├── .env.example
 ├── src/
